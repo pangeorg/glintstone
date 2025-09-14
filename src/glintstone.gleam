@@ -1,4 +1,5 @@
 import gleam/dict.{type Dict}
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/io
 import gleam/json
@@ -60,8 +61,17 @@ pub type RequestBody {
   RequestBody(content: Dict(String, MediaType), required: Bool)
 }
 
+pub type Example {
+  Example(
+    summary: Option(String),
+    description: Option(String),
+    value: Option(Dynamic),
+    external_value: Option(Dynamic),
+  )
+}
+
 pub type MediaType {
-  MediaType(schema: Schema)
+  MediaType(schema: Option(Schema), examples: Option(Dict(String, Example)))
 }
 
 pub type Response {
@@ -126,8 +136,9 @@ pub fn parse_openapi_spec(json_string: String) -> Result(OpenApiSpec, String) {
 pub fn openapi_decoder() {
   use info <- decode.field("info", info_decoder())
   use paths <- decode.field("paths", dict_decoder(path_item_decoder()))
-  use components <- decode.field(
+  use components <- decode.optional_field(
     "components",
+    None,
     decode.optional(components_decoder()),
   )
   decode.success(OpenApiSpec(info: info, paths: paths, components: components))
@@ -241,9 +252,42 @@ pub fn request_body_decoder() -> decode.Decoder(RequestBody) {
   decode.success(RequestBody(content: content, required: required))
 }
 
+pub fn example_decoder() -> decode.Decoder(Example) {
+  use description <- decode.optional_field(
+    "description",
+    None,
+    decode.optional(decode.string),
+  )
+  use summary <- decode.optional_field(
+    "summary",
+    None,
+    decode.optional(decode.string),
+  )
+  use value <- decode.optional_field(
+    "value",
+    None,
+    decode.optional(decode.dynamic),
+  )
+  use external_value <- decode.optional_field(
+    "externalValue",
+    None,
+    decode.optional(decode.dynamic),
+  )
+  decode.success(Example(summary:, description:, value:, external_value:))
+}
+
 pub fn media_type_decoder() -> decode.Decoder(MediaType) {
-  use schema <- decode.field("schema", schema_decoder())
-  decode.success(MediaType(schema:))
+  use schema <- decode.optional_field(
+    "schema",
+    None,
+    decode.optional(schema_decoder()),
+  )
+  use examples <- decode.optional_field(
+    "examples",
+    None,
+    decode.optional(dict_decoder(example_decoder())),
+  )
+  decode.success(MediaType(schema:, examples:))
 }
 
 pub fn response_decoder() -> decode.Decoder(Response) {
@@ -440,14 +484,16 @@ fn extract_response_type(responses: Dict(String, Response)) -> String {
   }
 }
 
-fn schema_to_type_name(schema: Schema) -> String {
+fn schema_to_type_name(schema: Option(Schema)) -> String {
   case schema {
-    RefSchema(ref) -> extract_type_name_from_ref(ref)
-    ArraySchema(items) -> "List(" <> schema_to_type_name(items) <> ")"
-    StringSchema -> "String"
-    IntegerSchema -> "Int"
-    BooleanSchema -> "Bool"
-    ObjectSchema(_, _) -> "Dict(String, String)"
+    Some(RefSchema(ref)) -> extract_type_name_from_ref(ref)
+    Some(ArraySchema(items)) ->
+      "List(" <> schema_to_type_name(Some(items)) <> ")"
+    Some(StringSchema) -> "String"
+    Some(IntegerSchema) -> "Int"
+    Some(BooleanSchema) -> "Bool"
+    Some(ObjectSchema(_, _)) -> "Dict(String, String)"
+    _ -> "Dict(String, String)"
     // Simplified
   }
 }
@@ -495,7 +541,7 @@ fn generate_type_constructor(type_name: String, schema: Schema) -> String {
     ObjectSchema(properties, _required) -> {
       let fields =
         dict.fold(properties, [], fn(acc, field_name, field_schema) {
-          let field_type = schema_to_type_name(field_schema)
+          let field_type = schema_to_type_name(Some(field_schema))
           let field_def =
             "    " <> to_snake_case(field_name) <> ": " <> field_type
           [field_def, ..acc]
@@ -816,7 +862,7 @@ pub fn example_openapi_spec() -> String {
 pub fn main() -> Result(String, String) {
   let spec_json = example_openapi_spec()
 
-  use spec <- result.try(parse_openapi_spec(spec_json))
+  let assert Ok(spec) = parse_openapi_spec(spec_json)
   let generated = generate_client_from_spec(spec)
 
   let complete_client =
