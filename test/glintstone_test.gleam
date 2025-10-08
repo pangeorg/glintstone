@@ -1,7 +1,7 @@
 import gleam/json
-import gleam/option.{type Option, None, Some}
+import gleam/option.{Some}
 import gleeunit
-import glintstone
+import glintstone/internal/lib
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -9,7 +9,7 @@ pub fn main() -> Nil {
 
 pub fn parse_info_test() {
   let json_string = "{\"title\": \"some title\", \"version\": \"3.0.1\"}"
-  let assert Ok(_) = json.parse(json_string, glintstone.info_decoder())
+  let assert Ok(_) = json.parse(json_string, lib.info_decoder())
 }
 
 pub fn parse_servers_test() {
@@ -18,7 +18,7 @@ pub fn parse_servers_test() {
       \"url\": \"https://api.demo-ecommerce.com/v1\",
       \"description\": \"Production environment\"
     }"
-  let assert Ok(_) = json.parse(json_string, glintstone.server_info_decoder())
+  let assert Ok(_) = json.parse(json_string, lib.server_info_decoder())
 }
 
 pub fn parse_object_test() {
@@ -75,7 +75,7 @@ pub fn parse_object_test() {
 		  }
 		}
 	"
-  let assert Ok(_) = json.parse(json_string, glintstone.object_schema_decoder())
+  let assert Ok(_) = json.parse(json_string, lib.object_schema_decoder())
 }
 
 pub fn parse_types_schema_string_test() {
@@ -86,10 +86,10 @@ pub fn parse_types_schema_string_test() {
 				\"example\": \"https://dummyimage.com/766x809\"
 			}
 	"
-  let assert Ok(glintstone.StringSchema(
+  let assert Ok(lib.StringSchema(
     format: Some("uri"),
     example: Some("https://dummyimage.com/766x809"),
-  )) = json.parse(json_string, glintstone.typed_schema_decoder())
+  )) = json.parse(json_string, lib.typed_schema_decoder())
 }
 
 pub fn parse_path_test() {
@@ -144,5 +144,5 @@ pub fn parse_path_test() {
       }
     }
 	"
-  let assert Ok(_) = json.parse(json_string, glintstone.path_item_decoder())
+  let assert Ok(_) = json.parse(json_string, lib.path_item_decoder())
 }
