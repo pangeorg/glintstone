@@ -1,3 +1,4 @@
+import argv
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -7,7 +8,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import gleam/string_tree
+import simplifile
 
 // Core OpenAPI spec types
 pub type OpenApiSpec {
@@ -15,11 +16,16 @@ pub type OpenApiSpec {
     info: Info,
     paths: Dict(String, PathItem),
     components: Option(Components),
+    servers: Option(List(ServerInfo)),
   )
 }
 
 pub type Info {
   Info(title: String, version: String)
+}
+
+pub type ServerInfo {
+  ServerInfo(url: String, description: String)
 }
 
 pub type Components {
@@ -43,6 +49,7 @@ pub type Operation {
     parameters: List(Parameter),
     request_body: Option(RequestBody),
     responses: Dict(String, Response),
+    security: Option(List(Dict(String, Dynamic))),
   )
 }
 
@@ -78,13 +85,21 @@ pub type Response {
   Response(description: String, content: Option(Dict(String, MediaType)))
 }
 
+pub type BearerScheme {
+  BearerScheme(sec_type: String, scheme: String, format: String)
+}
+
 pub type Schema {
   ObjectSchema(properties: Dict(String, Schema), required: List(String))
   ArraySchema(items: Schema)
-  StringSchema
-  IntegerSchema
+  StringSchema(format: Option(String), example: Option(String))
+  IntegerSchema(format: Option(String), example: Option(Int))
+  NumberSchema(format: Option(String), example: Option(Float))
+  DateTimeSchema(format: Option(String))
   BooleanSchema
   RefSchema(ref: String)
+  SecuritySchemas(bearer: Option(BearerScheme))
+  DynamicSchema(object: Dict(String, Dynamic))
 }
 
 // ============================================================================
@@ -92,12 +107,7 @@ pub type Schema {
 // ============================================================================
 
 pub type GeneratedClient {
-  GeneratedClient(
-    types: String,
-    builders: String,
-    operations: String,
-    examples: String,
-  )
+  GeneratedClient(types: String, builders: String, examples: String)
 }
 
 pub type PathSegment {
@@ -136,18 +146,34 @@ pub fn parse_openapi_spec(json_string: String) -> Result(OpenApiSpec, String) {
 pub fn openapi_decoder() {
   use info <- decode.field("info", info_decoder())
   use paths <- decode.field("paths", dict_decoder(path_item_decoder()))
+  use servers <- decode.optional_field(
+    "servers",
+    None,
+    decode.optional(decode.list(server_info_decoder())),
+  )
   use components <- decode.optional_field(
     "components",
     None,
     decode.optional(components_decoder()),
   )
-  decode.success(OpenApiSpec(info: info, paths: paths, components: components))
+  decode.success(OpenApiSpec(
+    info: info,
+    paths: paths,
+    components: components,
+    servers:,
+  ))
 }
 
 pub fn info_decoder() -> decode.Decoder(Info) {
   use title <- decode.field("title", decode.string)
   use version <- decode.field("version", decode.string)
   decode.success(Info(title:, version:))
+}
+
+pub fn server_info_decoder() -> decode.Decoder(ServerInfo) {
+  use url <- decode.field("url", decode.string)
+  use description <- decode.field("description", decode.string)
+  decode.success(ServerInfo(url:, description:))
 }
 
 pub fn components_decoder() {
@@ -191,11 +217,16 @@ pub fn path_item_decoder() -> decode.Decoder(PathItem) {
 }
 
 pub fn operation_decoder() -> decode.Decoder(Operation) {
-  use operation_id <- decode.field(
+  use operation_id <- decode.optional_field(
     "operationId",
+    None,
     decode.optional(decode.string),
   )
-  use summary <- decode.field("summary", decode.optional(decode.string))
+  use summary <- decode.optional_field(
+    "summary",
+    None,
+    decode.optional(decode.string),
+  )
   use parameters <- decode.optional_field(
     "parameters",
     [],
@@ -206,6 +237,11 @@ pub fn operation_decoder() -> decode.Decoder(Operation) {
     None,
     decode.optional(request_body_decoder()),
   )
+  use security <- decode.optional_field(
+    "security",
+    None,
+    decode.optional(decode.list(dict_decoder(decode.dynamic))),
+  )
   use responses <- decode.field("responses", dict_decoder(response_decoder()))
   decode.success(Operation(
     operation_id: operation_id,
@@ -213,6 +249,7 @@ pub fn operation_decoder() -> decode.Decoder(Operation) {
     parameters: parameters,
     request_body: request_body,
     responses: responses,
+    security: security,
   ))
 }
 
@@ -324,15 +361,79 @@ pub fn array_schema_decoder() {
   decode.success(ArraySchema(items:))
 }
 
+pub fn dynamic_object_decoder() {
+  use object <- decode.then(dict_decoder(decode.dynamic))
+  decode.success(DynamicSchema(object:))
+}
+
+pub fn security_schema_decoder() {
+  use bearer <- decode.optional_field(
+    "securitySchemes",
+    None,
+    decode.optional(bearer_auth_decoder()),
+  )
+  decode.success(SecuritySchemas(bearer:))
+}
+
+pub fn bearer_auth_decoder() {
+  use sec_type <- decode.field("type", decode.string)
+  use scheme <- decode.field("scheme", decode.string)
+  use format <- decode.field("bearerFormat", decode.string)
+  decode.success(BearerScheme(sec_type:, scheme:, format:))
+}
+
+pub fn string_schema_decoder() {
+  use example <- decode.optional_field(
+    "example",
+    None,
+    decode.optional(decode.string),
+  )
+  use format <- decode.optional_field(
+    "format",
+    None,
+    decode.optional(decode.string),
+  )
+  decode.success(StringSchema(example:, format:))
+}
+
+pub fn integer_schema_decoder() {
+  use example <- decode.optional_field(
+    "example",
+    None,
+    decode.optional(decode.int),
+  )
+  use format <- decode.optional_field(
+    "format",
+    None,
+    decode.optional(decode.string),
+  )
+  decode.success(IntegerSchema(example:, format:))
+}
+
+pub fn number_schema_decoder() {
+  use example <- decode.optional_field(
+    "example",
+    None,
+    decode.optional(decode.float),
+  )
+  use format <- decode.optional_field(
+    "format",
+    None,
+    decode.optional(decode.string),
+  )
+  decode.success(NumberSchema(example:, format:))
+}
+
 pub fn typed_schema_decoder() {
   use tag <- decode.field("type", decode.string)
   case tag {
     "object" -> object_schema_decoder()
-    "string" -> decode.success(StringSchema)
-    "integer" -> decode.success(IntegerSchema)
+    "string" -> string_schema_decoder()
+    "integer" -> integer_schema_decoder()
+    "number" -> number_schema_decoder()
     "boolean" -> decode.success(BooleanSchema)
     "array" -> array_schema_decoder()
-    _ -> decode.failure(StringSchema, "Unknown schema type")
+    _ -> decode.failure(BooleanSchema, "Unknown schema type")
   }
 }
 
@@ -341,8 +442,9 @@ pub fn schema_decoder() -> decode.Decoder(Schema) {
     // Try $ref first
     ref_schema_decoder(),
     or: [
-      // Try object schema
+      security_schema_decoder(),
       typed_schema_decoder(),
+      dynamic_object_decoder(),
     ],
   )
 }
@@ -354,530 +456,316 @@ fn dict_decoder(
 }
 
 // ============================================================================
-// Code Generation - Main Entry Point
+// Code Generation Logic
 // ============================================================================
 
-pub fn generate_client_from_spec(spec: OpenApiSpec) -> GeneratedClient {
-  let endpoints = extract_endpoints(spec)
-  let type_definitions = generate_type_definitions(spec.components)
-  let builder_types = generate_tree_types(endpoints)
-  let operation_functions = generate_operation_functions(endpoints)
-  let usage_examples = generate_usage_examples(endpoints)
-
-  GeneratedClient(
-    types: type_definitions,
-    builders: builder_types,
-    operations: operation_functions,
-    examples: usage_examples,
-  )
-}
-
-// ============================================================================
-// Endpoint Extraction
-// ============================================================================
-
-fn extract_endpoints(spec: OpenApiSpec) -> List(ApiEndpoint) {
-  spec.paths
-  |> dict.to_list()
-  |> list.flat_map(fn(path_entry) {
-    let #(path, path_item) = path_entry
-    let path_segments = parse_path_segments(path)
-
-    []
-    |> maybe_add_endpoint(path_segments, path_item.get, "get")
-    |> maybe_add_endpoint(path_segments, path_item.post, "post")
-    |> maybe_add_endpoint(path_segments, path_item.put, "put")
-    |> maybe_add_endpoint(path_segments, path_item.delete, "delete")
-  })
-}
-
-fn maybe_add_endpoint(
-  endpoints: List(ApiEndpoint),
-  path_segments: List(PathSegment),
-  operation: Option(Operation),
-  method_prefix: String,
-) -> List(ApiEndpoint) {
-  case operation {
-    None -> endpoints
-    Some(op) -> {
-      let operation_id = generate_operation_id(path_segments, method_prefix)
-      let response_type = extract_response_type(op.responses)
-      let builder_chain = generate_tree_chain(path_segments)
-
-      let endpoint =
-        ApiEndpoint(
-          path_segments: path_segments,
-          method: string_to_http_method(method_prefix),
-          operation_id: operation_id,
-          parameters: op.parameters,
-          request_body: op.request_body,
-          response_type: response_type,
-          builder_chain: builder_chain,
-        )
-
-      [endpoint, ..endpoints]
-    }
-  }
-}
-
-fn parse_path_segments(path: String) -> List(PathSegment) {
+/// Parse a path string into segments
+pub fn parse_path(path: String) -> List(PathSegment) {
   path
   |> string.split("/")
-  |> list.filter(fn(segment) { segment != "" })
+  |> list.filter(fn(s) { s != "" })
   |> list.map(fn(segment) {
     case string.starts_with(segment, "{") && string.ends_with(segment, "}") {
       True -> {
-        let param_name =
+        let name =
           segment
           |> string.drop_start(1)
           |> string.drop_end(1)
-        ParameterSegment(param_name, "Int")
-        // Simplified - would need type inference
+        ParameterSegment(name: name, param_type: "Int")
       }
-      False -> StaticSegment(segment)
+      False -> StaticSegment(name: segment)
     }
   })
 }
 
-fn generate_operation_id(segments: List(PathSegment), method: String) -> String {
-  let path_parts =
-    segments
-    |> list.map(fn(segment) {
-      case segment {
-        StaticSegment(name) -> to_pascal_case(name)
-        ParameterSegment(name, _) -> "By" <> to_pascal_case(name)
-      }
-    })
-    |> string.join("")
-
-  method <> path_parts
-}
-
-fn generate_tree_chain(segments: List(PathSegment)) -> List(String) {
+/// Generate a phantom type name from path segments
+pub fn generate_phantom_type(segments: List(PathSegment)) -> String {
   segments
-  |> list.scan("", fn(acc, segment) {
-    case segment {
-      StaticSegment(name) -> acc <> to_pascal_case(name)
-      ParameterSegment(name, _) -> acc <> "By" <> to_pascal_case(name)
-    }
-  })
-  |> list.drop(1)
-  // Remove empty first element
-  |> list.map(fn(name) { name <> "Builder" })
-}
-
-fn extract_response_type(responses: Dict(String, Response)) -> String {
-  // Simplified - look for 200 response and try to extract type
-  case dict.get(responses, "200") {
-    Ok(response) -> {
-      case response.content {
-        Some(content) -> {
-          case dict.get(content, "application/json") {
-            Ok(media_type) -> schema_to_type_name(media_type.schema)
-            Error(_) -> "String"
-          }
-        }
-        None -> "Nil"
+  |> list.map(fn(seg) {
+    case seg {
+      StaticSegment(name) -> to_pascal_case(name)
+      ParameterSegment(name, _) -> {
+        to_pascal_case(name) <> "Param"
       }
     }
-    Error(_) -> "String"
-  }
+  })
+  |> string.join("")
+  |> fn(s) { s <> "Resource" }
 }
 
-fn schema_to_type_name(schema: Option(Schema)) -> String {
-  case schema {
-    Some(RefSchema(ref)) -> extract_type_name_from_ref(ref)
-    Some(ArraySchema(items)) ->
-      "List(" <> schema_to_type_name(Some(items)) <> ")"
-    Some(StringSchema) -> "String"
-    Some(IntegerSchema) -> "Int"
-    Some(BooleanSchema) -> "Bool"
-    Some(ObjectSchema(_, _)) -> "Dict(String, String)"
-    _ -> "Dict(String, String)"
-    // Simplified
-  }
-}
-
-fn extract_type_name_from_ref(ref: String) -> String {
-  ref
-  |> string.split("/")
-  |> list.last()
-  |> result.unwrap("Unknown")
-}
-
-// ============================================================================
-// Code Generation Functions
-// ============================================================================
-
-fn generate_type_definitions(components: Option(Components)) -> String {
-  case components {
-    None -> ""
-    Some(comps) -> {
-      let sb =
-        string_tree.new()
-        |> string_tree.append(
-          "// ============================================================================\n",
-        )
-        |> string_tree.append("// Generated Types\n")
-        |> string_tree.append(
-          "// ============================================================================\n\n",
-        )
-
-      dict.fold(comps.schemas, sb, fn(acc, name, schema) {
-        acc
-        |> string_tree.append("pub type ")
-        |> string_tree.append(name)
-        |> string_tree.append(" {\n")
-        |> string_tree.append(generate_type_constructor(name, schema))
-        |> string_tree.append("}\n\n")
-      })
-      |> string_tree.to_string()
+/// Convert snake_case or kebab-case to PascalCase
+pub fn to_pascal_case(s: String) -> String {
+  case string.contains(s, "_") {
+    True ->
+      s
+      |> string.replace("-", "_")
+      |> string.split("_")
+      |> list.map(string.capitalise)
+      |> string.join("")
+    False -> {
+      let assert Ok(first) = string.first(s)
+      let rest = string.slice(s, 1, string.length(s))
+      string.join([string.uppercase(first), rest], "")
     }
   }
 }
 
-fn generate_type_constructor(type_name: String, schema: Schema) -> String {
-  case schema {
-    ObjectSchema(properties, _required) -> {
-      let fields =
-        dict.fold(properties, [], fn(acc, field_name, field_schema) {
-          let field_type = schema_to_type_name(Some(field_schema))
-          let field_def =
-            "    " <> to_snake_case(field_name) <> ": " <> field_type
-          [field_def, ..acc]
-        })
-        |> list.reverse()
-        |> string.join(",\n")
-
-      "  " <> type_name <> "(\n" <> fields <> "\n  )"
-    }
-    _ -> "  " <> type_name <> "(String)"
-    // Fallback
-  }
-}
-
-fn generate_tree_types(endpoints: List(ApiEndpoint)) -> String {
-  let unique_trees =
-    endpoints
-    |> list.flat_map(fn(endpoint) { endpoint.builder_chain })
-    |> list.unique()
-
-  let sb =
-    string_tree.new()
-    |> string_tree.append(
-      "// ============================================================================\n",
-    )
-    |> string_tree.append("// Generated Builder Types\n")
-    |> string_tree.append(
-      "// ============================================================================\n\n",
-    )
-
-  list.fold(unique_trees, sb, fn(acc, builder_name) {
-    acc
-    |> string_tree.append("pub type ")
-    |> string_tree.append(builder_name)
-    |> string_tree.append(" {\n")
-    |> string_tree.append("  ")
-    |> string_tree.append(builder_name)
-    |> string_tree.append("(client: ApiClient")
-    |> string_tree.append(generate_builder_fields(builder_name))
-    |> string_tree.append(")\n}\n\n")
-  })
-  |> string_tree.to_string()
-}
-
-fn generate_builder_fields(builder_name: String) -> String {
-  // Simplified - would analyze the builder name to determine what fields it needs
-  case string.contains(builder_name, "ById") {
-    True -> ", id: Int"
-    False -> ""
-  }
-}
-
-fn generate_operation_functions(endpoints: List(ApiEndpoint)) -> String {
-  let sb =
-    string_tree.new()
-    |> string_tree.append(
-      "// ============================================================================\n",
-    )
-    |> string_tree.append("// Generated Operations\n")
-    |> string_tree.append(
-      "// ============================================================================\n\n",
-    )
-
-  list.fold(endpoints, sb, fn(acc, endpoint) {
-    acc
-    |> string_tree.append(generate_single_operation(endpoint))
-    |> string_tree.append("\n")
-  })
-  |> string_tree.to_string()
-}
-
-fn generate_single_operation(endpoint: ApiEndpoint) -> String {
-  let function_name = to_snake_case(endpoint.operation_id)
-  let path_string = generate_path_string(endpoint.path_segments)
-  let builder_type = case list.last(endpoint.builder_chain) {
-    Ok(last) -> last
-    Error(_) -> "ApiClient"
-  }
-  let method_name = http_method_to_string(endpoint.method)
-
-  "pub fn "
-  <> function_name
-  <> "(builder: "
-  <> builder_type
-  <> ") -> "
-  <> method_name
-  <> "Request("
-  <> endpoint.response_type
-  <> ") {\n"
-  <> "  let path = \""
-  <> path_string
-  <> "\"\n"
-  <> "  "
-  <> method_name
-  <> "Request(builder.client, path, "
-  <> generate_phantom_value(endpoint.response_type)
-  <> ")\n"
-  <> "}"
-}
-
-fn generate_path_string(segments: List(PathSegment)) -> String {
-  "/"
-  <> segments
-  |> list.map(fn(segment) {
-    case segment {
-      StaticSegment(name) -> name
-      ParameterSegment(name, _) ->
-        "\" <> int.to_string(builder." <> to_snake_case(name) <> ") <> \""
+/// Convert to snake_case (poor mans no regex version)
+pub fn to_snake_case(s: String) -> String {
+  s
+  |> string.replace("-", "_")
+  |> string.to_graphemes()
+  |> list.map(fn(g) {
+    case string.uppercase(g) == g {
+      True -> string.concat(["_", string.lowercase(g)])
+      _ -> g
     }
   })
-  |> string.join("/")
-}
-
-fn generate_phantom_value(type_name: String) -> String {
-  case type_name {
-    "String" -> "\"\""
-    "Int" -> "0"
-    "Bool" -> "False"
-    "Nil" -> "Nil"
-    _ ->
-      case string.starts_with(type_name, "List(") {
-        True -> "[]"
-        False -> type_name <> "()"
-        // Constructor call
-      }
-  }
-}
-
-fn generate_usage_examples(endpoints: List(ApiEndpoint)) -> String {
-  let sb =
-    string_tree.new()
-    |> string_tree.append(
-      "// ============================================================================\n",
-    )
-    |> string_tree.append("// Generated Usage Examples\n")
-    |> string_tree.append(
-      "// ============================================================================\n\n",
-    )
-    |> string_tree.append("pub fn example_usage() {\n")
-    |> string_tree.append(
-      "  let client = new_client(\"https://api.example.com\")\n\n",
-    )
-
-  list.take(endpoints, 5)
-  // Just show first 5 examples
-  |> list.fold(sb, fn(acc, endpoint) {
-    acc
-    |> string_tree.append("  // " <> endpoint.operation_id <> "\n")
-    |> string_tree.append("  let _result = client\n")
-    |> string_tree.append(generate_example_chain(endpoint))
-    |> string_tree.append(
-      "    |> execute_"
-      <> string.lowercase(http_method_to_string(endpoint.method))
-      <> "()\n\n",
-    )
-  })
-  |> string_tree.append("  Nil\n}")
-  |> string_tree.to_string()
-}
-
-fn generate_example_chain(endpoint: ApiEndpoint) -> String {
-  endpoint.path_segments
-  |> list.fold("", fn(acc, segment) {
-    case segment {
-      StaticSegment(name) -> acc <> "    |> " <> to_snake_case(name) <> "()\n"
-      ParameterSegment(name, _) ->
-        acc <> "    |> by_" <> to_snake_case(name) <> "(123)\n"
-    }
-  })
-  <> "    |> "
-  <> to_snake_case(endpoint.operation_id)
-  <> "()\n"
-}
-
-// ============================================================================
-// Utility Functions
-// ============================================================================
-
-fn to_pascal_case(input: String) -> String {
-  input
-  |> string.split("_")
-  |> list.map(string.capitalise)
   |> string.join("")
 }
 
-fn to_snake_case(input: String) -> String {
-  // Simplified conversion - would need more sophisticated logic for real use
-  input
-  |> string.lowercase()
-  |> string.replace("-", "_")
+/// Extract all unique resource types from the spec
+pub fn extract_resource_types(spec: OpenApiSpec) -> List(String) {
+  spec.paths
+  |> dict.to_list()
+  |> list.map(fn(path_entry) {
+    let #(path, _path_item) = path_entry
+    let segments = parse_path(path)
+    let assert Ok(rest) = list.last(build_segment_chain(segments))
+    let #(prev, resource) = rest
+    [prev, resource]
+  })
+  |> list.flatten()
+  |> list.unique()
 }
 
-fn string_to_http_method(method: String) -> HttpMethod {
-  case method {
-    "get" -> Get
-    "post" -> Post
-    "put" -> Put
-    "delete" -> Delete
-    _ -> Get
+/// Build the chain of segments for an endpoint
+pub fn build_segment_chain(
+  segments: List(PathSegment),
+) -> List(#(String, String)) {
+  segments
+  |> list.index_map(fn(_seg, idx) {
+    let prev_type = case idx {
+      0 -> "Nil"
+      _ -> generate_phantom_type(list.take(segments, idx))
+    }
+    let current_type = generate_phantom_type(list.take(segments, idx + 1))
+    #(prev_type, current_type)
+  })
+}
+
+/// Generate phantom type declarations
+pub fn generate_phantom_types(spec: OpenApiSpec) -> String {
+  let types = extract_resource_types(spec)
+
+  let type_declarations =
+    types
+    |> list.map(fn(t) { "pub type " <> t })
+    |> string.join("\n")
+
+  "// Phantom types for type-safe API building\n" <> type_declarations
+}
+
+/// Generate a builder function for a segment
+pub fn generate_builder_function(
+  segment: PathSegment,
+  from_type: String,
+  to_type: String,
+) -> String {
+  case segment {
+    StaticSegment(name) -> {
+      let fn_name = to_snake_case(name)
+      "pub fn "
+      <> fn_name
+      <> "(builder: ApiBuilder("
+      <> from_type
+      <> ")) -> ApiBuilder("
+      <> to_type
+      <> ") {
+  let new_segments = list.append(builder.segments, [\""
+      <> name
+      <> "\"])
+  ApiBuilder(path: builder.path, segments: new_segments)
+}"
+    }
+    ParameterSegment(name, param_type) -> {
+      let fn_name = "by_" <> to_snake_case(name)
+      "pub fn "
+      <> fn_name
+      <> "(builder: ApiBuilder("
+      <> from_type
+      <> "), id: "
+      <> param_type
+      <> ") -> ApiBuilder("
+      <> to_type
+      <> ") {
+  let id_str = int.to_string(id)
+  let new_segments = list.append(builder.segments, [id_str])
+  ApiBuilder(path: builder.path, segments: new_segments)
+}"
+    }
   }
 }
 
-fn http_method_to_string(method: HttpMethod) -> String {
-  case method {
-    Get -> "Get"
-    Post -> "Post"
-    Put -> "Put"
-    Delete -> "Delete"
+/// Generate all builder functions for the spec
+pub fn generate_builder_functions(spec: OpenApiSpec) -> String {
+  let functions =
+    spec.paths
+    |> dict.to_list()
+    |> list.flat_map(fn(path_entry) {
+      let #(path, _path_item) = path_entry
+      let segments = parse_path(path)
+      let chain = build_segment_chain(segments)
+
+      list.zip(segments, chain)
+      |> list.map(fn(entry) {
+        let #(seg, #(from, to)) = entry
+        generate_builder_function(seg, from, to)
+      })
+    })
+    |> list.unique()
+    |> string.join("\n\n")
+
+  "// Builder functions\n" <> functions
+}
+
+/// Generate usage examples
+pub fn generate_examples(spec: OpenApiSpec) -> String {
+  let examples =
+    spec.paths
+    |> dict.to_list()
+    |> list.filter_map(fn(path_entry) {
+      let #(path, path_item) = path_entry
+
+      case path_item.get {
+        Some(_op) -> {
+          let segments = parse_path(path)
+          let chain =
+            segments
+            |> list.map(fn(seg) {
+              case seg {
+                StaticSegment(name) -> to_snake_case(name) <> "()"
+                ParameterSegment(name, _) ->
+                  "by_" <> to_snake_case(name) <> "(123)"
+              }
+            })
+            |> string.join(" |> ")
+
+          let example =
+            "  // GET "
+            <> path
+            <> "\n  let request = api() |> "
+            <> chain
+            <> " |> get()"
+          Ok(example)
+        }
+        None -> Error(Nil)
+      }
+    })
+    |> string.join("\n\n")
+
+  "// Usage examples\npub fn examples() {\n" <> examples <> "\n}"
+}
+
+/// Main generation function
+pub fn generate_client(spec: OpenApiSpec) -> GeneratedClient {
+  let types = generate_phantom_types(spec)
+  let builders = generate_builder_functions(spec)
+  let examples = generate_examples(spec)
+
+  GeneratedClient(types: types, builders: builders, examples: examples)
+}
+
+/// Generate the complete client code
+pub fn generate_complete_client(spec: OpenApiSpec) -> String {
+  let client = generate_client(spec)
+
+  let base_types =
+    "import gleam/list
+import gleam/string
+import gleam/int
+
+// Base API builder types
+pub type ApiBuilder(resource_type) {
+  ApiBuilder(path: String, segments: List(String))
+}
+
+pub type HttpMethod {
+  Get
+  Post
+  Put
+  Delete
+  Patch
+}
+
+pub type ApiRequest {
+  ApiRequest(method: HttpMethod, path: String)
+}
+
+// Initialize the API builder
+pub fn api() -> ApiBuilder(Nil) {
+  ApiBuilder(path: \"/api\", segments: [])
+}
+
+// Build the final path
+pub fn build_path(builder: ApiBuilder(a)) -> String {
+  case builder.segments {
+    [] -> builder.path
+    segments -> {
+      let joined_segments = string.join(segments, \"/\")
+      builder.path <> \"/\" <> joined_segments
+    }
   }
+}
+
+// HTTP methods
+pub fn get(builder: ApiBuilder(a)) -> ApiRequest {
+  ApiRequest(method: Get, path: build_path(builder))
+}
+
+pub fn post(builder: ApiBuilder(a)) -> ApiRequest {
+  ApiRequest(method: Post, path: build_path(builder))
+}
+
+pub fn put(builder: ApiBuilder(a)) -> ApiRequest {
+  ApiRequest(method: Put, path: build_path(builder))
+}
+
+pub fn delete(builder: ApiBuilder(a)) -> ApiRequest {
+  ApiRequest(method: Delete, path: build_path(builder))
+}
+
+"
+
+  string.join(
+    [
+      base_types,
+      client.types,
+      "",
+      client.builders,
+      "",
+      client.examples,
+    ],
+    "\n\n",
+  )
 }
 
 // ============================================================================
 // Example Usage
 // ============================================================================
 
-pub fn example_openapi_spec() -> String {
-  "{
-    \"openapi\": \"3.0.0\",
-    \"info\": {
-      \"title\": \"Example API\",
-      \"version\": \"1.0.0\"
-    },
-    \"paths\": {
-      \"/users\": {
-        \"get\": {
-          \"operationId\": \"getUsers\",
-          \"responses\": {
-            \"200\": {
-              \"description\": \"Success\",
-              \"content\": {
-                \"application/json\": {
-                  \"schema\": {
-                    \"type\": \"array\",
-                    \"items\": {
-                      \"$ref\": \"#/components/schemas/User\"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        \"post\": {
-          \"operationId\": \"createUser\",
-          \"requestBody\": {
-            \"content\": {
-              \"application/json\": {
-                \"schema\": {
-                  \"$ref\": \"#/components/schemas/User\"
-                }
-              }
-            }
-          },
-          \"responses\": {
-            \"201\": {
-              \"description\": \"Created\",
-              \"content\": {
-                \"application/json\": {
-                  \"schema\": {
-                    \"$ref\": \"#/components/schemas/User\"
-                  }
-                }
-              }
-            }
-          }
-        }
-      },
-      \"/users/{id}\": {
-        \"get\": {
-          \"operationId\": \"getUserById\",
-          \"parameters\": [
-            {
-              \"name\": \"id\",
-              \"in\": \"path\",
-              \"required\": true,
-              \"schema\": {
-                \"type\": \"integer\"
-              }
-            }
-          ],
-          \"responses\": {
-            \"200\": {
-              \"description\": \"Success\",
-              \"content\": {
-                \"application/json\": {
-                  \"schema\": {
-                    \"$ref\": \"#/components/schemas/User\"
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    \"components\": {
-      \"schemas\": {
-        \"User\": {
-          \"type\": \"object\",
-          \"properties\": {
-            \"id\": {
-              \"type\": \"integer\"
-            },
-            \"name\": {
-              \"type\": \"string\"
-            },
-            \"email\": {
-              \"type\": \"string\"
-            }
-          },
-          \"required\": [\"id\", \"name\", \"email\"]
-        }
-      }
+pub fn main() {
+  case argv.load().arguments {
+    [infile, outfile] -> {
+      let assert Ok(js) = simplifile.read(from: infile)
+      let assert Ok(spec) = parse_openapi_spec(js)
+      let generated_code = generate_complete_client(spec)
+      let assert Ok(_) = simplifile.write(to: outfile, contents: generated_code)
+      Nil
     }
-  }"
-}
-
-pub fn main() -> Result(String, String) {
-  let spec_json = example_openapi_spec()
-
-  let assert Ok(spec) = parse_openapi_spec(spec_json)
-  let generated = generate_client_from_spec(spec)
-
-  let complete_client =
-    string_tree.new()
-    |> string_tree.append("// Generated Gleam API Client\n")
-    |> string_tree.append("// Generated from OpenAPI specification\n\n")
-    |> string_tree.append(generated.types)
-    |> string_tree.append("\n")
-    |> string_tree.append(generated.builders)
-    |> string_tree.append("\n")
-    |> string_tree.append(generated.operations)
-    |> string_tree.append("\n")
-    |> string_tree.append(generated.examples)
-    |> string_tree.to_string()
-  io.print(complete_client)
-
-  Ok(complete_client)
+    _ ->
+      io.println(
+        "usage: ./glintstone 'path/to/openapi.json' 'path/to/client.gleam'",
+      )
+  }
 }
