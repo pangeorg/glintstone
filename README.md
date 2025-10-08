@@ -26,6 +26,6 @@ gleam test  # Run the tests
 
 ## TODO
 
-[ ] Implement the full OpenApi spec
-[ ] Check for paths which might lead to inconsistency, e.g. '/users/posts' & '/posts/users'
-[ ] Write tests for generated code
+- [ ] Implement the full OpenApi spec
+- [ ] Check for paths which might lead to inconsistency, e.g. '/users/posts' & '/posts/users'
+- [ ] Write tests for generated code
